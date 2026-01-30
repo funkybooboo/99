@@ -214,7 +214,6 @@ end
 --- @param buffer number
 --- @return _99.treesitter.Node[]
 function M.imports(buffer)
-  Logger:assert(false, "not implemented yet", "id", 69420)
   local lang = vim.bo[buffer].ft
   local root = tree_root(buffer, lang)
   if not root then
@@ -232,7 +231,9 @@ function M.imports(buffer)
       "lang",
       lang,
       "ok",
-      vim.inspect(ok)
+      vim.inspect(ok),
+      "id",
+      "global"
     )
     return {}
   end

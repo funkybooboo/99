@@ -107,6 +107,14 @@ function Point:from_ts_point(row, col)
   }, self)
 end
 
+--- @param lsp_point {character: number, line: number}
+function Point.from_lsp_point(lsp_point)
+  return setmetatable({
+    row = lsp_point.line + 1,
+    col = lsp_point.character + 1,
+  }, Point)
+end
+
 --- stores all 2 points
 --- @param range _99.Range
 --- @return boolean
@@ -262,7 +270,7 @@ function Range.from_visual_selection()
   return Range:new(buffer, start, actual_end)
 end
 
----@param node _99.treesitter.TSNode
+---@param node _99.treesitter.Node
 ---@param buffer number
 ---@return _99.Range
 function Range:from_ts_node(node, buffer)
