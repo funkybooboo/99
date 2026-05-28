@@ -21,14 +21,24 @@ local filetype_map = {
 }
 
 -- luacheck: ignore
---- @alias _99.Prompt.Data _99.Prompt.Data.Search | _99.Prompt.Data.Tutorial | _99.Prompt.Data.Visual
---- @alias _99.Prompt.Operation "visual" | "tutorial" | "search"
+--- @alias _99.Prompt.Data _99.Prompt.Data.Search | _99.Prompt.Data.Tutorial | _99.Prompt.Data.Visual | _99.Prompt.Data.Vibe
+--- @alias _99.Prompt.Operation "visual" | "tutorial" | "search" | "vibe"
+--- @alias _99.Prompt.QFixOperation "search" | "vibe"
 --- @alias _99.Prompt.EndingState "failed" | "success" | "cancelled"
 --- @alias _99.Prompt.State "ready" | "requesting" | _99.Prompt.EndingState
 --- @alias _99.Prompt.Cleanup fun(): nil
 
+--- @class _99.Prompt.Serialized
+--- @field data _99.Prompt.Data
+--- @field user_prompt string
 --- @class _99.Prompt.Data.Search
 --- @field type "search"
+--- @field qfix_items _99.Search.Result[]
+--- @field response string
+
+--- @class _99.Prompt.Data.Vibe
+--- @field type "vibe"
+--- @field response string
 --- @field qfix_items _99.Search.Result[]
 
 --- @class _99.Prompt.Data.Visual
@@ -47,6 +57,7 @@ local filetype_map = {
 --- @class _99.Prompt
 --- @field md_file_names string[]
 --- @field model string
+--- @field user_prompt string
 --- @field operation _99.Prompt.Operation
 --- @field state _99.Prompt.State
 --- @field full_path string
@@ -78,6 +89,7 @@ local function set_defaults(context, _99)
 
   context.state = "ready"
   context._99 = _99
+  context.user_prompt = ""
   context.clean_ups = {}
   context.md_file_names = copy(_99.md_files)
   context.model = _99.model
@@ -96,10 +108,52 @@ function Prompt.todo(_99)
   assert(false, "not implemented")
 end
 
-function Prompt.vibe(_99, opts)
-  _ = _99
-  _ = opts
-  assert(false, "not implemented")
+--- @param _99 _99.State
+--- @param data _99.Prompt.Serialized
+--- @return _99.Prompt
+function Prompt.deserialize(_99, data)
+  local prompt = setmetatable({
+    _99 = _99,
+    data = data.data,
+    operation = data.data.type,
+    user_prompt = data.user_prompt,
+    started_at = Time.now(),
+
+    --- we should only sync successful requests
+    state = "success",
+
+    xid = get_id(),
+  }, Prompt)
+  assert(prompt:valid(), "prompt is not valid from data")
+  return prompt
+end
+
+--- @return _99.Prompt.Serialized
+function Prompt:serialize()
+  assert(self.state == "success", "you can only serialize successful prompts")
+  return {
+    data = self.data,
+    user_prompt = self.user_prompt,
+  }
+end
+
+--- @param _99 _99.State
+--- @return _99.Prompt
+function Prompt.vibe(_99)
+  _99:refresh_rules()
+
+  --- @type _99.Prompt
+  local context = setmetatable({}, Prompt)
+  set_defaults(context, _99)
+  context.operation = "vibe"
+  context.data = {
+    type = "vibe",
+    response = "",
+    qfix_items = {},
+  }
+  context.logger:debug("99 Request", "method", "vibe")
+
+  return context
 end
 
 --- @param _99 _99.State
@@ -132,6 +186,12 @@ function Prompt.visual(_99)
   context.logger:debug("99 Request", "method", "visual")
 
   return context
+end
+
+--- @return string
+function Prompt:summary()
+  local prompt_str = utils.split_with_count(self.user_prompt, 8)
+  return string.format("%s: %s", self.operation, table.concat(prompt_str, " "))
 end
 
 --- @param _99 _99.State
@@ -167,6 +227,7 @@ function Prompt.search(_99)
   context.data = {
     type = "search",
     qfix_items = {},
+    response = "",
   }
   context.logger:debug("99 Request", "method", "search")
 
@@ -178,7 +239,7 @@ function Prompt:_observer(obs)
   return {
     on_start = function()
       self.state = "requesting"
-      self._99:track_prompt_request(self)
+      self._99.tracking:track(self)
 
       if obs then
         obs.on_start()
@@ -203,10 +264,21 @@ function Prompt:_observer(obs)
   }
 end
 
+local allowed_context_types = {
+  "visual",
+  "search",
+  "tutorial",
+  "vibe",
+}
 --- @return boolean
 function Prompt:valid()
   local t = self.data.type
-  return t == "visual" or t == "search" or t == "tutorial"
+  for _, allowed in ipairs(allowed_context_types) do
+    if t == allowed then
+      return true
+    end
+  end
+  return false
 end
 
 --- @param observer _99.Providers.Observer?
@@ -236,6 +308,10 @@ function Prompt:is_cancelled()
   return self.state == "cancelled"
 end
 
+function Prompt:is_completed()
+  return self.state == "success" or self.state == "failed"
+end
+
 ---@diagnostic disable-next-line: undefined-doc-name
 --- @param proc vim.SystemObj?
 function Prompt:_set_process(proc)
@@ -243,11 +319,10 @@ function Prompt:_set_process(proc)
 end
 
 function Prompt:cancel()
-  if self:is_cancelled() then
+  if self:is_cancelled() or self:is_completed() then
     return
   end
 
-  self.logger:debug("cancel")
   self.state = "cancelled"
   local proc = self._proc
   ---@diagnostic disable-next-line: undefined-field
@@ -289,8 +364,19 @@ function Prompt:search_data()
   return self.data --[[@as _99.Prompt.Data.Search]]
 end
 
+--- @return _99.Search.Result[]
+function Prompt:qfix_data()
+  assert(
+    self.data.type == "search" or self.data.type == "vibe",
+    "data type is not search or vibe: " .. self.data.type
+  )
+  return self.data.qfix_items
+end
+
 function Prompt:stop()
   self:cancel()
+  self:clear_marks()
+
   for _, cb in ipairs(self.clean_ups) do
     cb()
   end
@@ -415,6 +501,15 @@ function Prompt:finalize()
     self.agent_context,
     self._99.prompts.tmp_file_location(self.tmp_file)
   )
+
+  if
+    self.operation == "visual"
+    or self.operation == "tutorial"
+    or self.operation == "search"
+  then
+    table.insert(self.agent_context, self._99.prompts.only_tmp_file_change())
+  end
+
   return true, self
 end
 

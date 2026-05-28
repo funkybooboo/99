@@ -6,11 +6,11 @@ local make_observer = CleanUp.make_observer
 
 --- @param context _99.Prompt
 --- @param response string
-local function create_search_locations(context, response)
+local function finish_vibe(context, response)
   local qf_list = QFixHelpers.create_qfix_entries(response)
-  context.logger:set_area("search"):debug("qf_list created", "qf_list", qf_list)
+  context.logger:set_area("vibe"):debug("qf_list created", "qf_list", qf_list)
   context.data = {
-    type = "search",
+    type = "vibe",
     qfix_items = qf_list,
     response = response,
   }
@@ -22,16 +22,22 @@ local function create_search_locations(context, response)
   end
 end
 
+--- @class _99.Search.Result
+--- @field filename string
+--- @field lnum number
+--- @field col number
+--- @field text string
+
 --- @param context _99.Prompt
----@param opts _99.ops.SearchOpts
-local function search(context, opts)
+---@param opts _99.ops.Opts
+local function vibe(context, opts)
   opts = opts or {}
 
-  local logger = context.logger:set_area("search")
-  logger:debug("search", "with opts", opts.additional_prompt)
+  local logger = context.logger:set_area("vibe")
+  logger:debug("vibe", "with opts", opts.additional_prompt)
 
   local prompt, refs =
-    make_prompt(context, context._99.prompts.prompts.semantic_search(), opts)
+    make_prompt(context, context._99.prompts.prompts.vibe(), opts)
 
   context:add_prompt_content(prompt)
   context:add_references(refs)
@@ -52,9 +58,9 @@ local function search(context, opts)
         response or "no response provided"
       )
     elseif status == "success" then
-      create_search_locations(context, response)
+      finish_vibe(context, response)
       context._99:sync()
     end
   end))
 end
-return search
+return vibe

@@ -20,6 +20,7 @@ end
 --- @class _99.Providers.BaseProvider
 --- @field _build_command fun(self: _99.Providers.BaseProvider, query: string, context: _99.Prompt): string[]
 --- @field _get_provider_name fun(self: _99.Providers.BaseProvider): string
+--- @field _get_default_model fun(): string
 local BaseProvider = {}
 
 --- @param callback fun(models: string[]|nil, err: string|nil): nil
@@ -70,6 +71,10 @@ function BaseProvider:make_request(query, context, observer)
   )
 
   local command = self:_build_command(query, context)
+  local extra_args = context._99 and context._99.provider_extra_args or {}
+  if #extra_args > 0 then
+    vim.list_extend(command, extra_args)
+  end
   logger:debug("make_request", "command", command)
 
   local proc = vim.system(

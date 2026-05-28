@@ -2,7 +2,6 @@ local CleanUp = require("99.ops.clean-up")
 local Window = require("99.window")
 local make_prompt = require("99.ops.make-prompt")
 
-local make_clean_up = CleanUp.make_clean_up
 local make_observer = CleanUp.make_observer
 
 --- @param context _99.Prompt
@@ -32,19 +31,13 @@ local function tutorial(context, opts)
   local logger = context.logger:set_area("tutorial")
   logger:debug("starting", "with opts", opts)
 
-  local clean_up = make_clean_up(function()
-    context:stop()
-  end)
-
   local prompt, refs =
     make_prompt(context, context._99.prompts.prompts.tutorial(), opts)
 
   context:add_references(refs)
   context:add_prompt_content(prompt)
-  context:add_clean_up(clean_up)
 
-  context:start_request(make_observer(clean_up, function(status, response)
-    vim.schedule(clean_up)
+  context:start_request(make_observer(context, function(status, response)
     if status == "cancelled" then
       logger:debug("cancelled")
     elseif status == "failed" then
@@ -54,8 +47,8 @@ local function tutorial(context, opts)
         response or "no response provided"
       )
     elseif status == "success" then
-      local data = open_tutorial(context, response)
-      context._99:open_tutorial(data)
+      open_tutorial(context, response)
+      context._99:sync()
     end
   end))
 end

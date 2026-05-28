@@ -1,15 +1,21 @@
 --- TODO: I need to refactor a lot of this file
 --- it really sucks
 local Agents = require("99.extensions.agents")
+local Point = require("99.geo").Point
+
+local BASE = 100
+local LEGEND = 200
 
 --- @class _99.window.Module
 --- @field active_windows _99.window.Window[]
 local M = {
   active_windows = {},
 }
+
 local nsid = vim.api.nvim_create_namespace("99.window.error")
-local nvim_win_is_valid = vim.api.nvim_win_is_valid
-local nvim_buf_is_valid = vim.api.nvim_buf_is_valid
+local legend_nsid = vim.api.nvim_create_namespace("99.window.legend")
+local win_valid = vim.api.nvim_win_is_valid
+local buf_valid = vim.api.nvim_buf_is_valid
 
 --- @class _99.window.Config
 --- @field width number
@@ -199,10 +205,10 @@ end
 
 --- @param window _99.window.Window
 local function window_close(window)
-  if nvim_win_is_valid(window.win_id) then
+  if win_valid(window.win_id) then
     vim.api.nvim_win_close(window.win_id, true)
   end
-  if nvim_buf_is_valid(window.buf_id) then
+  if buf_valid(window.buf_id) then
     vim.api.nvim_buf_delete(window.buf_id, { force = true })
   end
 end
@@ -210,7 +216,7 @@ end
 --- @param window _99.window.Window
 --- @return boolean
 function M.valid(window)
-  return nvim_win_is_valid(window.win_id) and nvim_buf_is_valid(window.buf_id)
+  return win_valid(window.win_id) and buf_valid(window.buf_id)
 end
 
 --- @param text string
@@ -228,7 +234,7 @@ function M.display_cancellation_message(text)
   })
 
   vim.defer_fn(function()
-    if nvim_win_is_valid(window.win_id) then
+    if win_valid(window.win_id) then
       M.clear_active_popups()
     end
   end, 5000)
@@ -293,7 +299,7 @@ local function highlight_rules_found(win, rules, group)
 
   local rule_nsid = vim.api.nvim_create_namespace("99.window.rules")
   local function check_and_highlight_rules()
-    if not nvim_win_is_valid(win.win_id) then
+    if not win_valid(win.win_id) then
       return
     end
 
@@ -353,11 +359,101 @@ local function highlight_rules_found(win, rules, group)
   })
 end
 
+--- @alias _99.window.KeyMap table<string, string>
 --- @class _99.window.CaptureInputOpts
 --- @field cb fun(success: boolean, result: string): nil
 --- @field on_load? fun(): nil
 --- @field content? string[]
 --- @field rules? _99.Agents.Rules
+--- @field keymap? _99.window.KeyMap
+
+--- @param keymap _99.window.KeyMap
+--- @param width number
+--- @return string[]
+local function keymap_lines(keymap, width)
+  local keys = vim.tbl_keys(keymap)
+  table.sort(keys)
+
+  local lines = { "" }
+  for _, key in ipairs(keys) do
+    local current = lines[#lines]
+    local legend = string.format("%s=%s", key, keymap[key])
+    if #current + #legend + 1 > width then
+      table.insert(lines, legend)
+    else
+      lines[#lines] = string.format("%s %s", current, legend)
+    end
+  end
+
+  return lines
+end
+
+--- @param win _99.window.Window
+--- @param keymap _99.window.KeyMap
+local function create_window_legend(win, keymap)
+  local lines = keymap_lines(keymap, win.config.width - 2)
+  local keyoffset = #lines
+  local keymap_config = create_window_inside(win, keyoffset - 1)
+  keymap_config.height = keyoffset
+  keymap_config.zindex = LEGEND
+
+  local keymap_win = create_floating_window(keymap_config, "", false)
+  vim.bo[keymap_win.buf_id].buftype = "nofile"
+  vim.bo[keymap_win.buf_id].bufhidden = "wipe"
+  vim.bo[keymap_win.buf_id].swapfile = false
+  vim.bo[keymap_win.buf_id].modifiable = true
+  vim.bo[keymap_win.buf_id].readonly = false
+  vim.api.nvim_buf_set_lines(keymap_win.buf_id, 0, -1, false, lines)
+
+  vim.api.nvim_buf_clear_namespace(keymap_win.buf_id, legend_nsid, 0, -1)
+  for line_num, line in ipairs(lines) do
+    local start_col = 1
+    while true do
+      local found_start, found_end = string.find(line, "%S+=%S+", start_col)
+      if not found_start then
+        break
+      end
+
+      local legend = string.sub(line, found_start, found_end)
+      local separator = string.find(legend, "=", 1, true)
+      if separator and separator > 1 and separator < #legend then
+        local key_start = found_start - 1
+        local key_end = found_start + separator - 2
+        local value_start = found_start + separator - 1
+
+        vim.api.nvim_buf_set_extmark(
+          keymap_win.buf_id,
+          legend_nsid,
+          line_num - 1,
+          key_start,
+          {
+            end_col = key_end,
+            hl_group = "WarningMsg",
+          }
+        )
+
+        vim.api.nvim_buf_set_extmark(
+          keymap_win.buf_id,
+          legend_nsid,
+          line_num - 1,
+          value_start,
+          {
+            end_col = found_end,
+            hl_group = "Comment",
+          }
+        )
+      end
+
+      start_col = found_end + 1
+    end
+  end
+
+  vim.bo[keymap_win.buf_id].modifiable = false
+  vim.bo[keymap_win.buf_id].readonly = true
+
+  -- one for the border, one for the extra space, and then keymap count
+  vim.wo[win.win_id].scrolloff = keyoffset + 2
+end
 
 --- @param name string
 --- @param opts _99.window.CaptureInputOpts
@@ -372,6 +468,10 @@ function M.capture_input(name, opts)
   set_defaul_win_options(win, "99-prompt")
   vim.api.nvim_set_current_win(win.win_id)
 
+  opts.keymap = opts.keymap or {}
+  opts.keymap.q = "cancel"
+  create_window_legend(win, opts.keymap)
+
   local group = vim.api.nvim_create_augroup(
     "99_present_prompt_" .. win.buf_id,
     { clear = true }
@@ -382,7 +482,7 @@ function M.capture_input(name, opts)
     group = group,
     buffer = win.buf_id,
     callback = function()
-      if nvim_win_is_valid(win.win_id) then
+      if win_valid(win.win_id) then
         vim.api.nvim_set_current_win(win.win_id)
       else
         M.clear_active_popups()
@@ -394,7 +494,7 @@ function M.capture_input(name, opts)
     group = group,
     buffer = win.buf_id,
     callback = function()
-      if not nvim_win_is_valid(win.win_id) then
+      if not win_valid(win.win_id) then
         return
       end
       local lines = vim.api.nvim_buf_get_lines(win.buf_id, 0, -1, false)
@@ -408,7 +508,7 @@ function M.capture_input(name, opts)
     group = group,
     buffer = win.buf_id,
     callback = function()
-      if not nvim_win_is_valid(win.win_id) then
+      if not win_valid(win.win_id) then
         return
       end
       vim.api.nvim_del_augroup_by_id(group)
@@ -419,7 +519,7 @@ function M.capture_input(name, opts)
     group = group,
     pattern = tostring(win.win_id),
     callback = function()
-      if not nvim_win_is_valid(win.win_id) then
+      if not win_valid(win.win_id) then
         return
       end
       M.clear_active_popups()
@@ -445,6 +545,42 @@ function M.capture_input(name, opts)
       ensure_no_new_lines(opts.content)
     )
   end
+
+  return win
+end
+
+--- @param name string
+--- @param opts _99.window.CaptureInputOpts
+function M.capture_select_input(name, opts)
+  local win
+  win = M.capture_input(name, {
+    content = opts.content,
+    rules = opts.rules,
+    keymap = opts.keymap,
+    cb = function(success, result)
+      if not success then
+        opts.cb(false, result)
+      end
+    end,
+    on_load = function()
+      vim.bo[win.buf_id].modifiable = false
+      vim.bo[win.buf_id].readonly = true
+      if opts.on_load then
+        opts.on_load()
+      end
+    end,
+  })
+
+  vim.keymap.set("n", "<CR>", function()
+    if not win_valid(win.win_id) then
+      return
+    end
+
+    local point = Point:from_cursor()
+    local line = point:line(win.buf_id)
+    M.clear_active_popups()
+    opts.cb(true, line or "")
+  end, { buffer = win.buf_id, nowait = true })
 end
 
 function M.clear_active_popups()
@@ -493,6 +629,20 @@ function M.has_active_status_window()
   return has
 end
 
+--- @return boolean
+function M.has_active_window()
+  for _, w in ipairs(M.active_windows) do
+    if
+      w.type == "capture_input"
+      and win_valid(w.win_id)
+      and buf_valid(w.buf_id)
+    then
+      return true
+    end
+  end
+  return false
+end
+
 function M.refresh_active_windows()
   --- @type _99.window.Window[]
   local actives = {}
@@ -530,8 +680,9 @@ function M.close(win)
 end
 
 --- @class _99.window.SplitWindowOpts
---- @field split_direction "vertical" | "horizontal" | nil
---- @field filetype string
+--- @field split_direction "vertical" | "horizontal"
+--- @field window_opts table<string, any>
+--- @field filetype string | nil
 
 --- @param content string[]
 ---@param buffer number | nil
@@ -539,7 +690,7 @@ end
 --- @return _99.window.SplitWindow
 function M.create_split(content, buffer, opts)
   opts = opts or { split_direction = "vertical" }
-
+  opts.window_opts = opts.window_opts or {}
   opts.split_direction = opts.split_direction or "vertical"
   opts.filetype = opts.filetype or "markdown"
 
@@ -559,7 +710,7 @@ function M.create_split(content, buffer, opts)
 
   local win_id = vim.api.nvim_get_current_win()
   local buf_id = buffer
-  if not buf_id or not nvim_buf_is_valid(buf_id) then
+  if not buf_id or not buf_valid(buf_id) then
     buf_id = vim.api.nvim_create_buf(false, false)
     vim.api.nvim_buf_set_lines(
       buf_id,
@@ -572,7 +723,9 @@ function M.create_split(content, buffer, opts)
 
   vim.api.nvim_win_set_buf(win_id, buf_id)
   vim.bo[buf_id].filetype = opts.filetype
-
+  for option, value in pairs(opts.window_opts) do
+    vim.wo[win_id][option] = value
+  end
   return {
     win = win_id,
     buffer = buf_id,

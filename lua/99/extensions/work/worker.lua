@@ -1,10 +1,29 @@
 local Window = require("99.window")
 local utils = require("99.utils")
 
---- @class _99.Extension.Worker
+--- @class _99.Extensions.Worker
+--- A persistent way to keep track of work.
+---
+--- this will likely be where the most change and focus goes into.  I would like
+--- to take this into worktree territory and be able to swap between stuff super
+--- slick.
+---
+--- Until then, it is going to be a single bit of work that you can provide
+--- the description and then use search to find what is left that needs to be done.
+--- @docs base
+--- @field set_work fun(opts?: _99.WorkOpts): nil
+--- will set the work for the project.  If opts provide a description then no
+--- input capture of work description will be required
+--- @field search fun(): nil
+--- will use _99.search to find what is left to be done for this work item to be
+--- considered done
 local M = {}
 
+local DEFAULT_WORK_DESCRIPTION =
+  "Put in the description of the work you want to complete"
+
 --- @class _99.WorkOpts
+--- @docs included
 --- @field description string | nil
 
 --- @return string
@@ -32,6 +51,14 @@ local function read_work_item()
   return contents
 end
 
+--- @return string | nil
+local function hydrate_current_work_item()
+  if M.current_work_item == nil then
+    M.current_work_item = read_work_item()
+  end
+  return M.current_work_item or DEFAULT_WORK_DESCRIPTION
+end
+
 --- @param success boolean
 ---@param result string
 local function set_work_item_cb(success, result)
@@ -49,9 +76,8 @@ local function set_work_item_cb(success, result)
   end
 end
 
-function M.updated_work()
-  local work = M.current_work_item
-    or "Put in the description of the work you want to complete"
+function M.update_work()
+  local work = hydrate_current_work_item()
   Window.capture_input(" Work ", {
     cb = set_work_item_cb,
     content = vim.split(work, "\n"),
@@ -63,11 +89,12 @@ function M.set_work(opts)
   opts = opts or {}
   local description = opts.description
   if description then
-    M.current_work_item = description
+    set_work_item_cb(true, description)
   else
+    local work = hydrate_current_work_item()
     Window.capture_input(" Work ", {
       cb = set_work_item_cb,
-      content = { "Put in the description of the work you want to complete" },
+      content = { work },
     })
   end
 
@@ -76,49 +103,34 @@ function M.set_work(opts)
 end
 
 --- craft_prompt can be overridden so you can create your own prompt
---- @param worker _99.Extension.Worker
+--- @param worker _99.Extensions.Worker
 --- @return string
 function M.craft_prompt(worker)
   return string.format(
     [[
-<YourGoal>
-<OrderedSteps>
-<Step>
-Inspect and understand all changed code
-* git diff
-* git diff --staged
-* commits that have not been pushed to remote
-</Step>
-
-<Step>
-Take the current pending and commited changes and figure out what is
-left to change to complete the work item. The work item is described in <Description>
-
-Carefully review all the changes and <Description> before you respond.
-respond with proper Search Format described in <Rule> and an example in <Output>
-
-If you see bugs, also report those
-</Step>
-
-<Step>
-if there are steps to test the project.  run the tests and add to the list the failures
-and how to fix them
-</Step>
-</OrderedSteps>
-</YourGoal>
-<Description>
+## Description
 %s
-</Description>
+
+## You must complete the checklist
+[ ] - Inspect and understand all changed code
+ [ ] - git diff
+ [ ] - git diff --staged
+ [ ] - commits that have not been pushed to remote
+[ ] - Take the current pending and commited changes and figure out what is left
+      to change to complete the work item. The work item is described in <Description>
+[ ] - Carefully review all the changes and <Description> before you respond.
+      respond with proper Search Format described in <Rule> and an example in <Output>
+[ ] - If you see bugs, also report those
+[ ] - if there are tests, run the tests
+
 ]],
     worker.current_work_item
   )
 end
 
-function M.work()
+function M.search()
   local _99 = require("99")
-  if M.current_work_item == nil then
-    M.current_work_item = read_work_item()
-  end
+  hydrate_current_work_item()
 
   assert(
     M.current_work_item,
@@ -130,13 +142,18 @@ function M.work()
   })
 end
 
-function M.last_search_results()
-  if M.last_work_search == nil then
-    print("no previous search results")
-    return
-  end
+function M.vibe()
+  local _99 = require("99")
+  hydrate_current_work_item()
 
-  require("99").qfix_search_results(M.last_work_search)
+  assert(
+    M.current_work_item,
+    'you must call "set_work" and set your current work item before calling this'
+  )
+
+  M.last_work_search = _99.vibe({
+    additional_prompt = M.craft_prompt(M),
+  })
 end
 
 return M

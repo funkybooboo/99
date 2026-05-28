@@ -87,9 +87,13 @@ through `search` and `work`
                         -- max_files = 5000,            -- cap on total discovered files
                         -- exclude = { ".env", ".env.*", "node_modules", ".git", ... },
                     },
+                    --- File Discovery:
+                    --- - In git repos: Uses `git ls-files` which automatically respects .gitignore
+                    --- - Non-git repos: Falls back to filesystem scanning with manual excludes
+                    --- - Both methods apply the configured `exclude` list on top of gitignore
 
-                    --- What autocomplete you use.
-                    source = "cmp" | "blink",
+                    --- What autocomplete engine to use. Defaults to native (built-in) if not specified.
+                    source = "native", -- "native" (default), "cmp", or "blink"
                 },
 
                 --- WARNING: if you change cwd then this is likely broken
@@ -143,10 +147,13 @@ See search for more details
 | --- | --- | --- |
 | `setup` | `fun(opts?: _99.Options): nil` | - |
 | `search` | `fun(opts: _99.ops.SearchOpts): _99.TraceID` | - |
+| `vibe` | `fun(opts?: _99.ops.Opts): _99.TraceID \| nil` | - |
+| `open` | `fun(): nil` | - |
 | `visual` | `fun(opts: _99.ops.Opts): _99.TraceID` | - |
 | `view_logs` | `fun(): nil` | - |
 | `stop_all_requests` | `fun(): nil` | - |
 | `clear_previous_requests` | `fun(): nil` | - |
+| `Extensions` | `_99.Extensions` | - |
 
 ### API
 
@@ -158,6 +165,15 @@ way you want it to.
 #### search
 Performs a search across your project with the prompt you provide and return out a list of
 locations with notes that will be put into your quick fix list.
+
+#### vibe
+No description.
+
+#### open
+Opens a selection window for you to select the last interaction to open
+and display its contents in a way that makes sense for its type.  For
+search and vibe, it will open the qfix window.  For tutorial, it will open
+the tutorial window.
 
 #### visual
 takes your current selection and sends that along with the prompt provided and replaces
@@ -173,6 +189,35 @@ be killed (OpenCode) and any result will be discared
 
 #### clear_previous_requests
 clears all previous search and visual operations
+
+#### Extensions
+check out Worker for cool abstraction on search and vibe
+
+## _99.Extensions.Worker
+A persistent way to keep track of work.
+
+this will likely be where the most change and focus goes into.  I would like
+to take this into worktree territory and be able to swap between stuff super
+slick.
+
+Until then, it is going to be a single bit of work that you can provide
+the description and then use search to find what is left that needs to be done.
+
+### Description
+| Name | Type | Default Value |
+| --- | --- | --- |
+| `set_work` | `fun(opts?: _99.WorkOpts): nil` | - |
+| `search` | `fun(): nil` | - |
+
+### API
+
+#### set_work
+will set the work for the project.  If opts provide a description then no
+input capture of work description will be required
+
+#### search
+will use _99.search to find what is left to be done for this work item to be
+considered done
 
 ## _99.Options
 No description.
@@ -266,6 +311,19 @@ There are no properties yet.  But i would like to tweek some behavior based on o
 
 ### API
 No properties.
+
+## _99.WorkOpts
+No description.
+
+### Description
+| Name | Type | Default Value |
+| --- | --- | --- |
+| `description` | `string \| nil` | - |
+
+### API
+
+#### description
+No description.
 
 ## _99.Completion
 No description.
@@ -365,9 +423,9 @@ No description.
 When prompting, you can reference rules and files to add context to your request.
 
 - `#` references rules — type `#` in the prompt to autocomplete rule files from your configured rule directories
-- `@` references files — type `@` to fuzzy-search project files
+- `@` references files — type `@` to fuzzy-search project files. This will exclude files that are in .gitignore.
 
-Referenced content is automatically resolved and injected into the AI context. Requires cmp (`source = "cmp"` in your completion config).
+Referenced content is automatically resolved and injected into the AI context. Native completions work by default. For nvim-cmp or blink.cmp, set `source = "cmp"` or `source = "blink"`.
 
 ## Providers
 99 supports multiple AI CLI backends. Set `provider` in your setup to switch. If you don't set `model`, the provider's default is used.

@@ -1,13 +1,21 @@
----@param buffer number
+---@param range _99.Range
+---@param n number lines of context above and below the selection
 ---@return string
-local function get_file_contents(buffer)
-  local lines = vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+local function get_surrounding_context(range, n)
+  local start_row, _ = range.start:to_vim()
+  local end_row, _ = range.end_:to_vim()
+  local line_count = vim.api.nvim_buf_line_count(range.buffer)
+  local from = math.max(start_row - n, 0)
+  local to = math.min(end_row + 1 + n, line_count)
+  local lines = vim.api.nvim_buf_get_lines(range.buffer, from, to, false)
+
   return table.concat(lines, "\n")
 end
 
 --- @class _99.Prompts.SpecificOperations
 --- @field visual_selection fun(range: _99.Range): string
 --- @field semantic_search fun(): string
+--- @field vibe fun(): string
 --- @field tutorial fun(): string
 --- @field prompt fun(prompt: string, action: string, name?: string): string
 --- @field role fun(): string
@@ -29,13 +37,58 @@ crafting the tutorial
   end,
   semantic_search = function()
     return [[
-you are given a prompt and you must search through this project and return code that matches the description provided.
-<Rule>You must provide output without any commentary, just text locations</Rule>
+<Output>
+/path/to/project/src/foo.js:24:8,3,Some notes here about some stuff, it can contain commas
+/path/to/project/src/foo.js:71:12,7,more notes, everything is great!
+/path/to/project/src/bar.js:13:2,1,more notes again, this time specfically about bar and why bar is so important
+/path/to/project/src/baz.js:1:1,52,Notes about why baz is very important to the results
+</Output>
 <Rule>Text locations are in the format of: /path/to/file.ext:lnum:cnum,X,NOTES
 lnum = starting line number 1 based
 cnum = starting column number 1 based
 X = how many lines should be highlighted
 NOTES = A text description of why this highlight is important
+
+See <Output> for example
+</Rule>
+<Rule>NOTES cannot have new lines</Rule>
+<Rule>You must adhere to the output format</Rule>
+<Rule>Double check output format before writing it to the file</Rule>
+<Rule>Each location is separated by new lines</Rule>
+<Rule>Each path is specified in absolute pathing</Rule>
+<Rule>You can provide notes you think are relevant per location</Rule>
+<Rule>You must provide output without any commentary, just text locations</Rule>
+<Example>
+You have found 3 locations in files foo.js, bar.js, and baz.js.
+There are 2 locations in foo.js, 1 in bar.js and baz.js.
+<Meaning>
+This means that the search results found
+foo.js at line 24, char 8 and the next 2 lines
+foo.js at line 71, char 12 and the next 6 lines
+bar.js at line 13, char 2
+baz.js at line 1, char 1 and the next 51 lines
+</Meaning>
+</Example>
+<TaskDescription>
+you are given a prompt and you must search through this project and return code that matches the description provided.
+</TaskDescription>
+]]
+  end,
+  vibe = function()
+    return [[
+<Output>
+/path/to/project/src/foo.js:24:8,3,Some notes here about some stuff, it can contain commas
+/path/to/project/src/foo.js:71:12,7,more notes, everything is great!
+/path/to/project/src/bar.js:13:2,1,more notes again, this time specfically about bar and why bar is so important
+/path/to/project/src/baz.js:1:1,52,Notes about why baz is very important to the results
+</Output>
+<Rule>Text locations are in the format of: /path/to/file.ext:lnum:cnum,X,NOTES
+lnum = starting line number 1 based
+cnum = starting column number 1 based
+X = how many lines should be highlighted
+NOTES = A text description of why this highlight is important
+
+See <Output> for example
 </Rule>
 <Rule>NOTES cannot have new lines</Rule>
 <Rule>You must adhere to the output format</Rule>
@@ -46,12 +99,6 @@ NOTES = A text description of why this highlight is important
 <Example>
 You have found 3 locations in files foo.js, bar.js, and baz.js.
 There are 2 locations in foo.js, 1 in bar.js and baz.js.
-<Output>
-/path/to/project/src/foo.js:24:8,3,Some notes here about some stuff, it can contain commas
-/path/to/project/src/foo.js:71:12,7,more notes, everything is great!
-/path/to/project/src/bar.js:13:2,1,more notes again, this time specfically about bar and why bar is so important
-/path/to/project/src/baz.js:1:1,52,Notes about why baz is very important to the results
-</Output>
 <Meaning>
 This means that the search results found
 foo.js at line 24, char 8 and the next 2 lines
@@ -59,6 +106,13 @@ foo.js at line 71, char 12 and the next 6 lines
 bar.js at line 13, char 2
 baz.js at line 1, char 1 and the next 51 lines
 </Meaning>
+</Example>
+<TaskDescription>
+You are given a <Prompt> and you must implement it.  Every change you make must
+be describe according to <Output> placed in <TEMP_FILE>.
+Never respond as output what you have done.
+Always use the temporary file as the place to describe your actions according to Output rules
+</TaskDescription>
 ]]
   end,
   output_file = function()
@@ -73,20 +127,20 @@ ONLY provide requested changes by writing the change to TEMP_FILE
   --- @param name? string defaults to DIRECTIONS
   --- @return string
   prompt = function(prompt, action, name)
-    name = name or "DIRECTIONS"
+    name = name or "Prompt"
     return string.format(
       [[
-<%s>
-%s
-</%s>
 <Context>
 %s
 </Context>
+<%s>
+%s
+</%s>
 ]],
+      action,
       name,
       prompt,
-      name,
-      action
+      name
     )
   end,
   visual_selection = function(range)
@@ -101,16 +155,15 @@ consider the context of the selection and what you are suppose to be implementin
 <SELECTION_CONTENT>
 %s
 </SELECTION_CONTENT>
-<FILE_CONTAINING_SELECTION>
+<SURROUNDING_CONTEXT>
 %s
-</FILE_CONTAINING_SELECTION>
+</SURROUNDING_CONTEXT>
 ]],
       range:to_string(),
       range:to_text(),
-      get_file_contents(range.buffer)
+      get_surrounding_context(range, 100)
     )
   end,
-  -- luacheck: ignore 631
   read_tmp = function()
     return [[
 never attempt to read TEMP_FILE.
@@ -128,11 +181,15 @@ local prompt_settings = {
   --- @param tmp_file string
   --- @return string
   tmp_file_location = function(tmp_file)
+    return string.format("<TEMP_FILE>%s</TEMP_FILE>", tmp_file)
+  end,
+
+  --- @return string
+  only_tmp_file_change = function()
     return string.format(
-      "<MustObey>\n%s\n%s\n</MustObey>\n<TEMP_FILE>%s</TEMP_FILE>",
+      "<MustObey>\n%s\n%s\n</MustObey>",
       prompts.output_file(),
-      prompts.read_tmp(),
-      tmp_file
+      prompts.read_tmp()
     )
   end,
 

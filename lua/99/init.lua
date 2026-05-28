@@ -1,9 +1,13 @@
+--- TODO: I would like to clean up this file.  I will probably need to create a
+--- task for me to do in the future to make this a bit more clean and only have
+--- stuff that makes sense for the api to be in here... but for now.. ia m sorry
 local Logger = require("99.logger.logger")
+local Tracking = require("99.state.tracking")
 local Level = require("99.logger.level")
 local ops = require("99.ops")
-local Languages = require("99.language")
 local Window = require("99.window")
-local show_in_flight_requests = require("99.window.in-flight")
+local select_window = require("99.window.select-window")
+local StatusWindow = require("99.window.status-window")
 local Prompt = require("99.prompt")
 local State = require("99.state")
 local Extensions = require("99.extensions")
@@ -47,9 +51,10 @@ end
 --- @docs base
 --- @field logger? _99.Logger.Options
 --- @field model? string
---- @field in_flight_options? _99.InFlight.Opts
+--- @field in_flight_options? _99.StatusWindow.Opts
 --- @field md_files? string[]
 --- @field provider? _99.Providers.BaseProvider
+--- @field provider_extra_args? string[]
 --- @field display_errors? boolean
 --- @field auto_add_skills? boolean
 --- @field completion? _99.Completion
@@ -186,17 +191,27 @@ local _99_state
 --- @field search fun(opts: _99.ops.SearchOpts): _99.TraceID
 --- Performs a search across your project with the prompt you provide and return out a list of
 --- locations with notes that will be put into your quick fix list.
+--- @field vibe fun(opts?: _99.ops.Opts): _99.TraceID | nil
+--- will ask opencode or whatever provider currently being used to perform a vibe
+--- session.
+--- @field open fun(): nil
+--- Opens a selection window for you to select the last interaction to open
+--- and display its contents in a way that makes sense for its type.  For
+--- search and vibe, it will open the qfix window.  For tutorial, it will open
+--- the tutorial window.
 --- @field visual fun(opts: _99.ops.Opts): _99.TraceID
 --- takes your current selection and sends that along with the prompt provided and replaces
 --- your visual selection with the results
 --- @field view_logs fun(): nil
---- views the most recent logs and setups the machine to view older and new logs
---- this is still pretty rough and will change in the near future
+--- view_logs allows you to select the request you want to see and then you
+--- get to see the logs.
 --- @field stop_all_requests fun(): nil
 --- stops all in flight requests.  this means that the underlying process will
 --- be killed (OpenCode) and any result will be discared
 --- @field clear_previous_requests fun(): nil
 --- clears all previous search and visual operations
+--- @field Extensions _99.Extensions
+--- check out Worker for cool abstraction on search and vibe
 local _99 = {
   DEBUG = Level.DEBUG,
   INFO = Level.INFO,
@@ -212,6 +227,9 @@ local _99 = {
 --- @param capture_content string[] | nil
 local function capture_prompt(cb, name, context, opts, capture_content)
   Window.capture_input(name, {
+    keymap = {
+      [":w"] = "submit",
+    },
     content = capture_content,
 
     --- @param ok boolean
@@ -233,6 +251,7 @@ local function capture_prompt(cb, name, context, opts, capture_content)
         table.insert(opts.additional_rules, r)
       end
       opts.additional_prompt = response
+      context.user_prompt = response
       cb(context, opts)
     end,
     on_load = function()
@@ -247,7 +266,7 @@ function _99.info()
   _99_state:refresh_rules()
   table.insert(
     info,
-    string.format("Previous Requests: %d", _99_state:completed_prompts())
+    string.format("Previous Requests: %d", _99_state.tracking:completed())
   )
   table.insert(
     info,
@@ -259,56 +278,54 @@ function _99.info()
   Window.display_centered_message(info)
 end
 
---- @param tutorials _99.Prompt.Data.Tutorial[]
---- @return string[]
-local function tutorial_to_string(tutorials)
-  local out = {}
-  for _, t in ipairs(tutorials) do
-    table.insert(out, string.format("%d: %s", t.xid, t.tutorial[1]))
-  end
-  return out
-end
+--     elseif #tutorials == 1 then
+--       local data = tutorials[1]
+--       assert(data, "tutorial is malformed")
+--       Window.create_split(data.tutorial, data.buffer, opts)
+--       return
 
---- @param xid number | nil
---- @param opts? _99.window.SplitWindowOpts
-function _99.open_tutorial(xid, opts)
-  opts = opts or { split_direction = "vertical" }
-  if xid == nil then
-    --- @type _99.Prompt.Data.Tutorial[]
-    local tutorials = _99_state:get_request_data_by_type("tutorial")
-    if #tutorials == 0 then
-      print("no tutorials available")
-      return
-    elseif #tutorials == 1 then
-      local data = tutorials[1]
-      assert(data, "tutorial is malformed")
-      Window.create_split(data.tutorial, data.buffer, opts)
-      return
-    else
-      --- TODO: Complete this task when i work through tutorials
-      error([[not implemented.  right now tutorials are not sccrollable.
-This is a later change required.  I want a next/prev tutorial navigation
-much like qfix list.  then i to have a capture input style window where you
-can press enter
-]])
-    end
-    return
-  end
-
-  --- @type _99.Prompt | nil
-  local context = _99_state.__request_by_id[xid]
-  assert(context, "could not find request")
-  assert(context.state == "success", "tutorial found had a non success state")
-
+--- @param context _99.Prompt
+function _99.open_tutorial(context)
   local tutorial = context:tutorial_data()
-  Window.create_split(tutorial.tutorial, tutorial.buffer, opts)
+  Window.create_split(tutorial.tutorial, tutorial.buffer, {
+    split_direction = "vertical",
+    window_opts = {
+      wrap = true,
+    },
+  })
 end
 
---- @param path string
-function _99:rule_from_path(path)
-  _ = self
-  path = expand(path) --[[ @as string]]
-  return Agents.get_rule_by_path(_99_state.rules, path)
+function _99.open()
+  local requests = _99_state.tracking:successful()
+  local str_requests = Tracking.to_selectable_list(requests)
+  select_window(str_requests, function(idx)
+    local r = requests[idx]
+    assert(r:valid(), "encountered unexpected issue.  malformated data")
+    if r.operation == "visual" then
+      --- TODO: this is its own work item for being able to have a global mark
+      --- section in which i keep track of marks for the lifetime of the
+      --- editor and when you close the editor, then it should lose them
+      print("visual not supported: i will figure this out... at some point")
+    elseif r.operation == "search" or r.operation == "vibe" then
+      _99.open_qfix_for_request(r)
+    elseif r.operation == "tutorial" then
+      _99.open_tutorial(r)
+    end
+  end)
+end
+
+--- @param opts? _99.ops.Opts
+--- @return _99.TraceID
+function _99.vibe(opts)
+  local o = process_opts(opts)
+  local context = Prompt.vibe(_99_state)
+  if o.additional_prompt then
+    context.user_prompt = o.additional_prompt
+    ops.vibe(context, o)
+  else
+    capture_prompt(ops.vibe, "Vibe", context, o)
+  end
+  return context.xid
 end
 
 --- @param opts? _99.ops.SearchOpts
@@ -317,6 +334,7 @@ function _99.search(opts)
   local o = process_opts(opts) --[[ @as _99.ops.SearchOpts ]]
   local context = Prompt.search(_99_state)
   if o.additional_prompt then
+    context.user_prompt = o.additional_prompt
     ops.search(context, o)
   else
     capture_prompt(ops.search, "Search", context, o)
@@ -329,6 +347,7 @@ function _99.tutorial(opts)
   opts = process_opts(opts)
   local context = Prompt.tutorial(_99_state)
   if opts.additional_prompt then
+    context.user_prompt = opts.additional_prompt
     ops.tutorial(context, opts)
   else
     capture_prompt(ops.tutorial, "Tutorial", context, opts)
@@ -341,6 +360,7 @@ function _99.visual(opts)
   opts = process_opts(opts)
   local context = Prompt.visual(_99_state)
   if opts.additional_prompt then
+    context.user_prompt = opts.additional_prompt
     ops.over_range(context, opts)
   else
     capture_prompt(ops.over_range, "Visual", context, opts)
@@ -348,73 +368,37 @@ function _99.visual(opts)
   return context.xid
 end
 
---- View all the logs that are currently cached.  Cached log count is determined
---- by _99.Logger.Options that are passed in.
 function _99.view_logs()
-  _99_state.__view_log_idx = 1
-  local logs = Logger.logs()
-  if #logs == 0 then
-    print("no logs to display")
-    return
-  end
-  Window.display_full_screen_message(logs[1])
-end
-
-function _99.prev_request_logs()
-  local logs = Logger.logs()
-  if #logs == 0 then
-    print("no logs to display")
-    return
-  end
-  _99_state.__view_log_idx = math.min(_99_state.__view_log_idx + 1, #logs)
-  Window.display_full_screen_message(logs[_99_state.__view_log_idx])
-end
-
-function _99.next_request_logs()
-  local logs = Logger.logs()
-  if #logs == 0 then
-    print("no logs to display")
-    return
-  end
-  _99_state.__view_log_idx = math.max(_99_state.__view_log_idx - 1, 1)
-  Window.display_full_screen_message(logs[_99_state.__view_log_idx])
-end
-
---- @class _99.QFixEntry
---- @field filename string
---- @field lnum number
---- @field col number
---- @field text string
-
-function _99.stop_all_requests()
-  for _, c in pairs(_99_state.__request_by_id) do
-    if c.state == "requesting" then
-      c:stop()
+  local requests = _99_state.tracking.history
+  local str_requests = Tracking.to_selectable_list(requests)
+  select_window(str_requests, function(idx)
+    local r = requests[idx]
+    local logs = Logger.logs_by_id(r.xid)
+    if logs == nil then
+      logs = { "No logs found for request: " .. r.xid }
     end
-  end
+    Window.display_full_screen_message(logs)
+  end)
 end
 
-function _99.clear_all_marks()
-  for _, mark in ipairs(_99_state.__active_marks or {}) do
-    mark:delete()
+--- @param request _99.Prompt
+function _99.open_qfix_for_request(request)
+  local items = request:qfix_data()
+  if #items == 0 then
+    print("there are no quickfix items to show")
+    return
   end
-  _99_state.__active_marks = {}
-end
 
---- @param xid number | nil
-function _99.qfix_search_results(xid)
-  --- @type _99.Prompt
-  local entry = _99_state.__request_by_id[xid]
-  assert(entry, "qfix_search_results could not find id: " .. xid)
-
-  local data = entry:search_data()
-  local items = data.qfix_items
-  vim.fn.setqflist({}, "r", { title = "99 Search Results", items = items })
+  vim.fn.setqflist({}, "r", { title = "99 Results", items = items })
   vim.cmd("copen")
 end
 
+function _99.stop_all_requests()
+  _99_state.tracking:stop_all_requests()
+end
+
 function _99.clear_previous_requests()
-  _99_state:clear_history()
+  _99_state.tracking:clear_history()
 end
 
 --- if you touch this function you will be fired
@@ -439,6 +423,7 @@ function _99.setup(opts)
   vim.api.nvim_create_autocmd("VimLeavePre", {
     callback = function()
       _99.stop_all_requests()
+      _99_state:sync()
     end,
   })
 
@@ -452,6 +437,13 @@ function _99.setup(opts)
     if provider._get_default_model then
       _99_state.model = provider._get_default_model()
     end
+  end
+
+  if opts.provider_extra_args then
+    assert(
+      type(opts.provider_extra_args) == "table",
+      "opts.provider_extra_args must be a table"
+    )
   end
 
   if opts.md_files then
@@ -468,11 +460,11 @@ function _99.setup(opts)
 
   _99_state.display_errors = opts.display_errors or false
   _99_state:refresh_rules()
-  Languages.initialize(_99_state)
   Extensions.init(_99_state)
   Extensions.capture_project_root()
 
-  show_in_flight_requests(_99_state, _99_state.in_flight_options)
+  local sw = StatusWindow.new(_99_state, opts.in_flight_options)
+  sw:start()
 end
 
 --- @param md string
@@ -529,6 +521,9 @@ function _99.__debug()
 end
 
 _99.Providers = Providers
+
+--- @class _99.Extensions
+--- @field Worker _99.Extensions.Worker
 _99.Extensions = {
   Worker = require("99.extensions.work.worker"),
 }

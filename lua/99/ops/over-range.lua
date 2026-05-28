@@ -51,8 +51,6 @@ local function over_range(context, opts)
   local clean_up = make_clean_up(function()
     top_status:stop()
     bottom_status:stop()
-    context:clear_marks()
-    context:stop()
   end)
 
   local system_cmd = context._99.prompts.prompts.visual_selection(range)
@@ -64,7 +62,7 @@ local function over_range(context, opts)
 
   top_status:start()
   bottom_status:start()
-  context:start_request(make_observer(clean_up, {
+  context:start_request(make_observer(context, {
     on_complete = function(status, response)
       if status == "cancelled" then
         logger:debug("request cancelled for visual selection, removing marks")
@@ -99,6 +97,7 @@ local function over_range(context, opts)
         table.insert(lines, 1, "")
 
         new_range:replace_text(lines)
+        context._99:sync()
       end
     end,
     on_stdout = function(line)
